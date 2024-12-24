@@ -1,81 +1,79 @@
 import requests
 import argparse
 from concurrent.futures import ThreadPoolExecutor
-from bs4 import BeautifulSoup
 
-WAYBACK_API_URL = "http://web.archive.org/cdx/search/cdx"
+# API Endpoints
 ALIENVAULT_URL = "https://otx.alienvault.com/api/v1/indicators/domain/{domain}/url_list"
 URLSCAN_URL = "https://urlscan.io/api/v1/search/"
-
-def get_latest_commoncrawl_index():
-    """
-    Fetch the latest Common Crawl index dynamically.
-    """
-    try:
-        response = requests.get("http://index.commoncrawl.org/")
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, "html.parser")
-        # Parse available indices from the HTML
-        links = soup.find_all("a", href=True)
-        indices = [link['href'].strip("/") for link in links if "CC-MAIN" in link['href']]
-        latest_index = sorted(indices, reverse=True)[0]
-        return latest_index
-    except Exception as e:
-        print(f"Error fetching latest Common Crawl index: {e}")
-        return None
-
-def fetch_wayback_urls(domain, include_subdomains=True):
-    params = {
-        "url": f"*.{domain}" if include_subdomains else domain,
-        "output": "json",
-        "fl": "original",
-        "filter": "statuscode:200",
-    }
-    response = requests.get(WAYBACK_API_URL, params=params)
-    response.raise_for_status()
-    data = response.json()
-    return [row[0] for row in data[1:]]  # Skip header row
+WAYBACK_API_URL = "http://web.archive.org/cdx/search/cdx"
+SHODAN_SEARCH_URL = "https://api.shodan.io/shodan/host/search"
 
 def fetch_alienvault_urls(domain):
-    url = ALIENVAULT_URL.format(domain=domain)
-    response = requests.get(url)
-    response.raise_for_status()
-    data = response.json()
-    return [entry['url'] for entry in data.get('url_list', [])]
-
-def fetch_commoncrawl_urls(domain):
     """
-    Fetch URLs from Common Crawl for the given domain.
+    Fetch URLs from AlienVault OTX.
     """
     try:
-        latest_index = get_latest_commoncrawl_index()
-        if not latest_index:
-            print("Unable to determine the latest Common Crawl index.")
-            return []
-
-        COMMONCRAWL_URL = f"http://index.commoncrawl.org/{latest_index}-index"
-        params = {
-            "url": f"*.{domain}",
-            "output": "json",
-            "filter": "statuscode:200",
-        }
-        response = requests.get(COMMONCRAWL_URL, params=params)
+        url = ALIENVAULT_URL.format(domain=domain)
+        response = requests.get(url)
         response.raise_for_status()
         data = response.json()
-        return [entry['url'] for entry in data]
+        return [entry['url'] for entry in data.get('url_list', [])]
     except requests.exceptions.RequestException as e:
-        print(f"Error fetching from Common Crawl: {e}")
+        print(f"Error fetching from AlienVault: {e}")
         return []
 
 def fetch_urlscan_urls(domain, api_key):
-    headers = {"API-Key": api_key}
-    params = {"q": domain}
-    response = requests.get(URLSCAN_URL, headers=headers, params=params)
-    response.raise_for_status()
-    data = response.json()
-    return [result['page']['url'] for result in data.get('results', [])]
+    """
+    Fetch URLs from URLScan.io.
+    """
+    try:
+        headers = {"API-Key": api_key}
+        params = {"q": domain}
+        response = requests.get(URLSCAN_URL, headers=headers, params=params)
+        response.raise_for_status()
+        data = response.json()
+        return [result['page']['url'] for result in data.get('results', [])]
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching from URLScan.io: {e}")
+        return []
+
+def fetch_wayback_urls(domain):
+    """
+    Fetch URLs from the Wayback Machine.
+    """
+    try:
+        params = {
+            "url": f"*.{domain}",
+            "output": "json",
+            "fl": "original",
+            "filter": "statuscode:200",
+        }
+        response = requests.get(WAYBACK_API_URL, params=params)
+        response.raise_for_status()
+        data = response.json()
+        return [row[0] for row in data[1:]]  # Skip header row
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching from Wayback Machine: {e}")
+        return []
+
+def fetch_shodan_urls(domain, api_key):
+    """
+    Fetch URLs from Shodan.
+    """
+    try:
+        params = {"query": domain, "key": api_key}
+        response = requests.get(SHODAN_SEARCH_URL, params=params)
+        response.raise_for_status()
+        data = response.json()
+        return [match['ip_str'] for match in data.get('matches', [])]  # Use IPs as URLs
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching from Shodan: {e}")
+        return []
 
 def merge_results(*args, unique=True):
+    """
+    Merge results from all sources, ensuring uniqueness if required.
+    """
     merged = set() if unique else []
     for urls in args:
         if unique:
@@ -84,30 +82,56 @@ def merge_results(*args, unique=True):
             merged.extend(urls)
     return sorted(merged) if unique else merged
 
+def save_results_to_file(results, file_path):
+    """
+    Save results to a specified file.
+    """
+    try:
+        with open(file_path, "w") as file:
+            for url in results:
+                file.write(f"{url}\n")
+        print(f"Results saved to {file_path}")
+    except Exception as e:
+        print(f"Error saving results to file: {e}")
+
 def main():
-    parser = argparse.ArgumentParser(description="Combine functionality of waybackurls and gau.")
+    parser = argparse.ArgumentParser(description="Unified security workflow for fetching URLs.")
     parser.add_argument("domain", help="The domain to fetch URLs for.")
-    parser.add_argument("--no-subs", action="store_true", help="Exclude subdomains from the search.")
-    parser.add_argument("--threads", type=int, default=5, help="Number of threads to use.")
-    parser.add_argument("--api-key", help="API key for URLScan.io.")
+    parser.add_argument("--api-key-urlscan", help="API key for URLScan.io.")
+    parser.add_argument("--api-key-shodan", help="API key for Shodan.")
     parser.add_argument("--unique", action="store_true", help="Ensure unique and sorted URLs in output.")
+    parser.add_argument("--threads", type=int, default=5, help="Number of threads to use.")
+    parser.add_argument("--output", help="File path to save the results.")
     args = parser.parse_args()
 
-    include_subdomains = not args.no_subs
+    domain = args.domain
+    unique = args.unique
+
+    # Create a thread pool for parallel fetching
     with ThreadPoolExecutor(max_workers=args.threads) as executor:
         futures = [
-            executor.submit(fetch_wayback_urls, args.domain, include_subdomains),
-            executor.submit(fetch_alienvault_urls, args.domain),
-            executor.submit(fetch_commoncrawl_urls, args.domain),
+            executor.submit(fetch_alienvault_urls, domain),
+            executor.submit(fetch_wayback_urls, domain),
         ]
-        if args.api_key:
-            futures.append(executor.submit(fetch_urlscan_urls, args.domain, args.api_key))
+        # Add URLScan.io if API key is provided
+        if args.api_key_urlscan:
+            futures.append(executor.submit(fetch_urlscan_urls, domain, args.api_key_urlscan))
+        # Add Shodan if API key is provided
+        if args.api_key_shodan:
+            futures.append(executor.submit(fetch_shodan_urls, domain, args.api_key_shodan))
 
+        # Collect results from all threads
         results = [future.result() for future in futures]
 
-    merged_results = merge_results(*results, unique=args.unique)
-    for url in merged_results:
-        print(url)
+    # Merge results
+    merged_results = merge_results(*results, unique=unique)
+
+    # Save results to a file if output is specified
+    if args.output:
+        save_results_to_file(merged_results, args.output)
+    else:
+        for url in merged_results:
+            print(url)
 
 if __name__ == "__main__":
     main()
