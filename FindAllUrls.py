@@ -1,17 +1,28 @@
 import requests
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from bs4 import BeautifulSoup
 
 WAYBACK_API_URL = "http://web.archive.org/cdx/search/cdx"
 ALIENVAULT_URL = "https://otx.alienvault.com/api/v1/indicators/domain/{domain}/url_list"
 URLSCAN_URL = "https://urlscan.io/api/v1/search/"
 
 def get_latest_commoncrawl_index():
-    response = requests.get("http://index.commoncrawl.org/")
-    response.raise_for_status()
-    # Extract the latest index dynamically (e.g., using regex or BeautifulSoup)
-    # For simplicity, we'll return a manually updated latest index for now.
-    return "CC-MAIN-2023-51"
+    """
+    Fetch the latest Common Crawl index dynamically.
+    """
+    try:
+        response = requests.get("http://index.commoncrawl.org/")
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+        # Parse available indices from the HTML
+        links = soup.find_all("a", href=True)
+        indices = [link['href'].strip("/") for link in links if "CC-MAIN" in link['href']]
+        latest_index = sorted(indices, reverse=True)[0]
+        return latest_index
+    except Exception as e:
+        print(f"Error fetching latest Common Crawl index: {e}")
+        return None
 
 def fetch_wayback_urls(domain, include_subdomains=True):
     params = {
@@ -20,7 +31,6 @@ def fetch_wayback_urls(domain, include_subdomains=True):
         "fl": "original",
         "filter": "statuscode:200",
     }
-
     response = requests.get(WAYBACK_API_URL, params=params)
     response.raise_for_status()
     data = response.json()
@@ -34,8 +44,15 @@ def fetch_alienvault_urls(domain):
     return [entry['url'] for entry in data.get('url_list', [])]
 
 def fetch_commoncrawl_urls(domain):
+    """
+    Fetch URLs from Common Crawl for the given domain.
+    """
     try:
         latest_index = get_latest_commoncrawl_index()
+        if not latest_index:
+            print("Unable to determine the latest Common Crawl index.")
+            return []
+
         COMMONCRAWL_URL = f"http://index.commoncrawl.org/{latest_index}-index"
         params = {
             "url": f"*.{domain}",
@@ -46,7 +63,7 @@ def fetch_commoncrawl_urls(domain):
         response.raise_for_status()
         data = response.json()
         return [entry['url'] for entry in data]
-    except requests.exceptions.HTTPError as e:
+    except requests.exceptions.RequestException as e:
         print(f"Error fetching from Common Crawl: {e}")
         return []
 
