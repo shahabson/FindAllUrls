@@ -84,15 +84,16 @@ def merge_results(*args, unique=True):
 
 def save_results_to_file(results, file_path):
     """
-    Save results to a specified file.
+    Save results to a specified file with UTF-8 encoding.
     """
     try:
-        with open(file_path, "w") as file:
+        with open(file_path, "w", encoding="utf-8") as file:
             for url in results:
                 file.write(f"{url}\n")
         print(f"Results saved to {file_path}")
     except Exception as e:
         print(f"Error saving results to file: {e}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Unified security workflow for fetching URLs.")
